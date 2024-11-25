@@ -154,9 +154,106 @@ void requestLocker(PGconn *conn, int memberID) {
 }
 
 void requestWaiting(PGconn *conn, int memberID) {
-    //unimplemented
+    int equipmentID;
+
+    // Step 1: 사용 가능한 운동기구 조회
+    std::string query = "SELECT ID, name FROM Equipments;";
+    PGresult *res = PQexec(conn, query.c_str());
+    if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+        int rows = PQntuples(res);
+        if (rows > 0) {
+            std::cout << "Available equipment:\n";
+            for (int i = 0; i < rows; ++i) {
+                std::cout << "ID: " << PQgetvalue(res, i, 0)
+                          << ", Name: " << PQgetvalue(res, i, 1) << "\n";
+            }
+        } else {
+            std::cout << "No equipment available.\n";
+            PQclear(res);
+            return;
+        }
+    } else {
+        std::cerr << "Error retrieving equipment list.\n";
+        PQclear(res);
+        return;
+    }
+    PQclear(res);
+
+    // Step 2: 사용자 입력을 통한 운동기구 선택
+    std::cout << "Enter the ID of the equipment you'd like to wait for: ";
+    std::cin >> equipmentID;
+
+    // Step 3: 대기열에 추가
+    std::string waitQuery =
+        "INSERT INTO Waitings (EID, ownerID, wait_num) "
+        "VALUES (" +
+        std::to_string(equipmentID) + ", " + std::to_string(memberID) +
+        ", (SELECT COALESCE(MAX(wait_num), 0) + 1 FROM Waitings WHERE EID = " + std::to_string(equipmentID) + "));";
+
+    res = PQexec(conn, waitQuery.c_str());
+    if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+        std::cout << "You've been added to the waiting queue for equipment ID " << equipmentID << ".\n";
+    } else {
+        std::cerr << "Failed to join the waiting queue.\n"
+                  << PQerrorMessage(conn);
+    }
+    PQclear(res);
 }
 
+void completeUsage(PGconn *conn, int memberID) {
+    // Step 1: 현재 사용 중인 기구 확인 (wait_num = 1)
+    std::string findQuery =
+        "SELECT EID FROM Waitings WHERE wait_num = 1 AND ownerID = " + std::to_string(memberID) + ";";
+    PGresult *findRes = PQexec(conn, findQuery.c_str());
+
+    if (PQresultStatus(findRes) != PGRES_TUPLES_OK || PQntuples(findRes) == 0) {
+        std::cout << "No equipment currently in use for member ID " << memberID << ".\n";
+        PQclear(findRes);
+        return;
+    }
+
+    int equipmentID = std::stoi(PQgetvalue(findRes, 0, 0));
+    PQclear(findRes);
+
+    // Step 2: 로그 기록
+    std::string logQuery =
+        "INSERT INTO WaitingLog (EID, uid, end_time) "
+        "VALUES (" + std::to_string(equipmentID) + ", " + std::to_string(memberID) + ", NOW());";
+    PGresult *logRes = PQexec(conn, logQuery.c_str());
+
+    if (PQresultStatus(logRes) != PGRES_COMMAND_OK) {
+        std::cerr << "Failed to log equipment usage: " << PQerrorMessage(conn) << "\n";
+        PQclear(logRes);
+        return;
+    }
+    PQclear(logRes);
+
+    // Step 3: 현재 사용자의 웨이팅 튜플 삭제
+    std::string deleteQuery =
+        "DELETE FROM Waitings WHERE EID = " + std::to_string(equipmentID) + " AND wait_num = 1;";
+    PGresult *deleteRes = PQexec(conn, deleteQuery.c_str());
+
+    if (PQresultStatus(deleteRes) != PGRES_COMMAND_OK) {
+        std::cerr << "Failed to remove waiting entry: " << PQerrorMessage(conn) << "\n";
+        PQclear(deleteRes);
+        return;
+    }
+    PQclear(deleteRes);
+
+    // Step 4: 다른 웨이팅 번호들을 1씩 감소
+    std::string updateQuery =
+        "UPDATE Waitings SET wait_num = wait_num - 1 WHERE EID = " + std::to_string(equipmentID) + " AND wait_num > 1;";
+    PGresult *updateRes = PQexec(conn, updateQuery.c_str());
+
+    if (PQresultStatus(updateRes) == PGRES_COMMAND_OK) {
+        std::cout << "Waiting numbers for equipment ID " << equipmentID << " have been updated.\n";
+    } else {
+        std::cerr << "Failed to update waiting numbers: " << PQerrorMessage(conn) << "\n";
+    }
+    PQclear(updateRes);
+
+    std::cout << "Usage completed and waiting queue updated successfully.\n";
+}
 
 void performMemberActions(PGconn *conn, int memberID) {
     int choice;
@@ -165,7 +262,8 @@ void performMemberActions(PGconn *conn, int memberID) {
         std::cout << "1. Request PT\n";
         std::cout << "2. Request Locker\n";
         std::cout << "3. Request Waiting\n";
-        std::cout << "4. Logout\n";
+        std::cout << "4. Complete Usage\n";
+        std::cout << "5. Logout\n";
         std::cout << "Enter your choice: ";
         std::cin >> choice;
 
@@ -180,6 +278,9 @@ void performMemberActions(PGconn *conn, int memberID) {
                 requestWaiting(conn, memberID);
                 break;
             case 4:
+                completeUsage(conn, memberID);
+                break;
+            case 5:
                 std::cout << "Logging out...\n";
                 return;
             default:
