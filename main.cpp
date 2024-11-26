@@ -153,7 +153,7 @@ void requestLocker(PGconn *conn, int memberID) {
     PQclear(res);
 }
 
-void requestWaiting(PGconn *conn, int memberID) {
+void requestWaiting(PGconn *conn, int userID, const std::string &role) {
     int equipmentID;
 
     // Step 1: 사용 가능한 운동기구 조회
@@ -185,10 +185,10 @@ void requestWaiting(PGconn *conn, int memberID) {
 
     // Step 3: 대기열에 추가
     std::string waitQuery =
-        "INSERT INTO Waitings (EID, ownerID, wait_num) "
+        "INSERT INTO Waitings (EID, ownerID, wait_num, role) "
         "VALUES (" +
-        std::to_string(equipmentID) + ", " + std::to_string(memberID) +
-        ", (SELECT COALESCE(MAX(wait_num), 0) + 1 FROM Waitings WHERE EID = " + std::to_string(equipmentID) + "));";
+        std::to_string(equipmentID) + ", " + std::to_string(userID) +
+        ", (SELECT COALESCE(MAX(wait_num), 0) + 1 FROM Waitings WHERE EID = " + std::to_string(equipmentID) + "), '" + role + "');";
 
     res = PQexec(conn, waitQuery.c_str());
     if (PQresultStatus(res) == PGRES_COMMAND_OK) {
@@ -200,14 +200,14 @@ void requestWaiting(PGconn *conn, int memberID) {
     PQclear(res);
 }
 
-void completeUsage(PGconn *conn, int memberID) {
+void completeUsage(PGconn *conn, int userID, const std::string &role) {
     // Step 1: 현재 사용 중인 기구 확인 (wait_num = 1)
     std::string findQuery =
-        "SELECT EID FROM Waitings WHERE wait_num = 1 AND ownerID = " + std::to_string(memberID) + ";";
+        "SELECT EID FROM Waitings WHERE wait_num = 1 AND ownerID = " + std::to_string(userID) + " AND role = '" + role + "';";
     PGresult *findRes = PQexec(conn, findQuery.c_str());
 
     if (PQresultStatus(findRes) != PGRES_TUPLES_OK || PQntuples(findRes) == 0) {
-        std::cout << "No equipment currently in use for member ID " << memberID << ".\n";
+        std::cout << "No equipment currently in use for member ID " << userID << ".\n";
         PQclear(findRes);
         return;
     }
@@ -218,7 +218,7 @@ void completeUsage(PGconn *conn, int memberID) {
     // Step 2: 로그 기록
     std::string logQuery =
         "INSERT INTO WaitingLog (EID, uid, end_time) "
-        "VALUES (" + std::to_string(equipmentID) + ", " + std::to_string(memberID) + ", NOW());";
+        "VALUES (" + std::to_string(equipmentID) + ", " + std::to_string(userID) + ", NOW());";
     PGresult *logRes = PQexec(conn, logQuery.c_str());
 
     if (PQresultStatus(logRes) != PGRES_COMMAND_OK) {
@@ -255,7 +255,7 @@ void completeUsage(PGconn *conn, int memberID) {
     std::cout << "Usage completed and waiting queue updated successfully.\n";
 }
 
-void performMemberActions(PGconn *conn, int memberID) {
+void performMemberActions(PGconn *conn, int memberID, const std::string &role) {
     int choice;
     while (true) {
         std::cout << "\n=== Member Menu ===\n";
@@ -275,10 +275,44 @@ void performMemberActions(PGconn *conn, int memberID) {
                 requestLocker(conn, memberID);
                 break;
             case 3:
-                requestWaiting(conn, memberID);
+                requestWaiting(conn, memberID, role);
                 break;
             case 4:
-                completeUsage(conn, memberID);
+                completeUsage(conn, memberID, role);
+                break;
+            case 5:
+                std::cout << "Logging out...\n";
+                return;
+            default:
+                std::cout << "Invalid choice. Please try again.\n";
+        }
+    }
+}
+
+void performTrainerActions(PGconn *conn, int trainerID, const std::string &role) {
+    int choice;
+    while (true) {
+        std::cout << "\n=== Trainer Menu ===\n";
+        std::cout << "1. View PT member's Inbody\n";
+        std::cout << "2. View Salary \n";
+        std::cout << "3. Request Waiting\n";
+        std::cout << "4. Complete Usage\n";
+        std::cout << "5. Logout\n";
+        std::cout << "Enter your choice: ";
+        std::cin >> choice;
+
+        switch (choice) {
+            case 1:
+                //viewMemberInbody(conn, trainerID);
+                break;
+            case 2:
+                //viewSalary(conn, trainerID);
+                break;
+            case 3:
+                requestWaiting(conn, trainerID, role);
+                break;
+            case 4:
+                completeUsage(conn, trainerID, role);
                 break;
             case 5:
                 std::cout << "Logging out...\n";
@@ -304,7 +338,10 @@ int main() {
     }
 
     if (login(conn, userID, role)) {
-        if (role == "member") performMemberActions(conn, userID);
+        if (role == "member") performMemberActions(conn, userID, role);
+        else if (role == "trainer") performTrainerActions(conn, userID, role);
+        //else if (role == "fdstaff") performFDStaffActions(conn, userID);
+        //else if (role == "admin") performAdminActions(conn);
         else std::cout << "Other roles are not yet implemented.\n";
     }
 
