@@ -255,6 +255,120 @@ void completeUsage(PGconn *conn, int userID, const std::string &role) {
     std::cout << "Usage completed and waiting queue updated successfully.\n";
 }
 
+void viewMemberInbody(PGconn *conn, int trainerID) {
+    // Step 1: 트레이너와 PT 관계를 맺은 회원 목록 조회
+    std::string query =
+        "SELECT M.ID, M.name "
+        "FROM Members M "
+        "JOIN PTs P ON M.ID = P.MID "
+        "WHERE P.TID = " + std::to_string(trainerID) + ";";
+
+    PGresult *res = PQexec(conn, query.c_str());
+
+    // Step 2: 결과 확인
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        std::cerr << "Failed to retrieve members list: " << PQerrorMessage(conn) << "\n";
+        PQclear(res);
+        return;
+    }
+
+    int rows = PQntuples(res);
+    if (rows == 0) {
+        std::cout << "No members are currently assigned to you.\n";
+        PQclear(res);
+        return;
+    }
+
+    // Step 3: 회원 목록 출력
+    std::cout << "Your members:\n";
+    for (int i = 0; i < rows; ++i) {
+        std::cout << "ID: " << PQgetvalue(res, i, 0)
+                  << ", Name: " << PQgetvalue(res, i, 1) << "\n";
+    }
+
+    PQclear(res);
+
+    // Step 4: 회원 ID 선택
+    int selectedMemberID;
+    std::cout << "Enter the ID of the member to view their inbody information: ";
+    std::cin >> selectedMemberID;
+
+    // Step 5: 선택된 회원의 모든 인바디 정보 조회
+    query =
+        "SELECT date, height, weight, muscle, score "
+        "FROM Inbodys "
+        "WHERE MID = " + std::to_string(selectedMemberID) +
+        " ORDER BY date DESC;";
+
+    res = PQexec(conn, query.c_str());
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        std::cerr << "Failed to retrieve inbody information: " << PQerrorMessage(conn) << "\n";
+        PQclear(res);
+        return;
+    }
+
+    rows = PQntuples(res);
+    if (rows == 0) {
+        std::cout << "No inbody information available for the selected member.\n";
+    } else {
+        std::cout << "Inbody Information (latest first):\n";
+        for (int i = 0; i < rows; ++i) {
+            std::cout << "Date: " << PQgetvalue(res, i, 0)
+                      << ", Height: " << PQgetvalue(res, i, 1) << " cm"
+                      << ", Weight: " << PQgetvalue(res, i, 2) << " kg"
+                      << ", Muscle: " << PQgetvalue(res, i, 3) << " kg"
+                      << ", Score: " << PQgetvalue(res, i, 4) << " points\n";
+        }
+    }
+
+    PQclear(res);
+}
+
+void viewSalary(PGconn *conn, int ID, const std::string &role) {
+    // Check if the role is valid
+    if (role != "trainer" && role != "fdstaff") {
+        std::cerr << "Invalid role! Please specify 'trainer' or 'fdstaff'.\n";
+        return;
+    }
+
+    std::string query;
+
+    // Build the query based on the role
+    if (role == "trainer") {
+        query =
+            "SELECT T.ID, T.name, L.salary * T.PT_count * 2 AS TotalSalary "
+            "FROM Trainers T "
+            "JOIN Levels L ON T.level = L.level "
+            "WHERE T.ID = " + std::to_string(ID) + ";";
+    } else if (role == "fdstaff") {
+        query =
+            "SELECT F.ID, F.name, L.salary * F.attendance_days AS TotalSalary "
+            "FROM FDStaffs F "
+            "JOIN Levels L ON F.level = L.level "
+            "WHERE F.ID = " + std::to_string(ID) + ";";
+    }
+
+    // Execute the query
+    PGresult *res = PQexec(conn, query.c_str());
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+        if (PQntuples(res) == 0) {
+            std::cout << "No salary data found for the specified " << role << ".\n";
+        } else {
+            std::cout << "Salary Details:\n";
+            std::cout << "ID: " << PQgetvalue(res, 0, 0)
+                      << ", Name: " << PQgetvalue(res, 0, 1)
+                      << ", Total Salary: " << PQgetvalue(res, 0, 2) << " KRW\n";
+        }
+    } else {
+        std::cerr << "Error executing salary query: " << PQerrorMessage(conn) << "\n";
+    }
+
+    PQclear(res);
+}
+
+
 void performMemberActions(PGconn *conn, int memberID, const std::string &role) {
     int choice;
     while (true) {
@@ -303,10 +417,10 @@ void performTrainerActions(PGconn *conn, int trainerID, const std::string &role)
 
         switch (choice) {
             case 1:
-                //viewMemberInbody(conn, trainerID);
+                viewMemberInbody(conn, trainerID);
                 break;
             case 2:
-                //viewSalary(conn, trainerID);
+                viewSalary(conn, trainerID, role);
                 break;
             case 3:
                 requestWaiting(conn, trainerID, role);
