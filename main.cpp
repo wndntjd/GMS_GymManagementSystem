@@ -343,7 +343,7 @@ void viewSalary(PGconn *conn, int ID, const std::string &role) {
             "WHERE T.ID = " + std::to_string(ID) + ";";
     } else if (role == "fdstaff") {
         query =
-            "SELECT F.ID, F.name, L.salary * F.attendance_days AS TotalSalary "
+            "SELECT F.ID, F.name, L.salary * F.attend_days AS TotalSalary "
             "FROM FDStaffs F "
             "JOIN Levels L ON F.level = L.level "
             "WHERE F.ID = " + std::to_string(ID) + ";";
@@ -365,6 +365,110 @@ void viewSalary(PGconn *conn, int ID, const std::string &role) {
         std::cerr << "Error executing salary query: " << PQerrorMessage(conn) << "\n";
     }
 
+    PQclear(res);
+}
+
+void transferMembership(PGconn *conn) {
+    int fromMemberID, toMemberID, transferDays;
+
+    // Step 1: 양도할 두 회원 조회
+    std::cout << "Enter the ID of the member transferring their membership: ";
+    std::cin >> fromMemberID;
+    std::cout << "Enter the ID of the member receiving the membership: ";
+    std::cin >> toMemberID;
+
+    // Step 2: 확인 쿼리
+    std::string query = "SELECT ID, name, end_date FROM Members WHERE ID IN (" +
+                        std::to_string(fromMemberID) + ", " + std::to_string(toMemberID) + ");";
+
+    PGresult *res = PQexec(conn, query.c_str());
+    if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+        int rows = PQntuples(res);
+        if (rows < 2) {
+            std::cout << "Both members must exist for the transfer.\n";
+            PQclear(res);
+            return;
+        }
+        std::cout << "Member Information:\n";
+        for (int i = 0; i < rows; ++i) {
+            std::cout << "ID: " << PQgetvalue(res, i, 0) << ", Name: " << PQgetvalue(res, i, 1)
+                      << ", Membership Ends: " << PQgetvalue(res, i, 2) << "\n";
+        }
+    } else {
+        std::cerr << "Error fetching member data: " << PQerrorMessage(conn) << "\n";
+        PQclear(res);
+        return;
+    }
+    PQclear(res);
+
+    // Step 3: Transfer 기간 입력
+    std::cout << "Enter the number of days to transfer: ";
+    std::cin >> transferDays;
+
+    // Step 4: Transaction으로 처리
+    PQexec(conn, "BEGIN;");
+    std::string deductQuery = "UPDATE Members SET end_date = end_date - INTERVAL '" +
+                               std::to_string(transferDays) + " days' WHERE ID = " +
+                               std::to_string(fromMemberID) + ";";
+    std::string addQuery = "UPDATE Members SET end_date = end_date + INTERVAL '" +
+                           std::to_string(transferDays) + " days' WHERE ID = " +
+                           std::to_string(toMemberID) + ";";
+
+    PGresult *deductRes = PQexec(conn, deductQuery.c_str());
+    PGresult *addRes = PQexec(conn, addQuery.c_str());
+
+    if (PQresultStatus(deductRes) == PGRES_COMMAND_OK && PQresultStatus(addRes) == PGRES_COMMAND_OK) {
+        PQexec(conn, "COMMIT;");
+        std::cout << "Membership transfer completed successfully.\n";
+    } else {
+        PQexec(conn, "ROLLBACK;");
+        std::cerr << "Membership transfer failed. Transaction rolled back.\n";
+    }
+
+    PQclear(deductRes);
+    PQclear(addRes);
+}
+
+void extendMembership(PGconn *conn) {
+    int memberID, extensionDays;
+
+    // Step 1: 회원 정보 조회
+    std::cout << "Enter the ID of the member to extend membership for: ";
+    std::cin >> memberID;
+
+    std::string query = "SELECT ID, name, end_date FROM Members WHERE ID = " + std::to_string(memberID) + ";";
+    PGresult *res = PQexec(conn, query.c_str());
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+        if (PQntuples(res) == 0) {
+            std::cout << "No member found with the given ID.\n";
+            PQclear(res);
+            return;
+        }
+        std::cout << "Member Information:\n";
+        std::cout << "ID: " << PQgetvalue(res, 0, 0) << ", Name: " << PQgetvalue(res, 0, 1)
+                  << ", Membership Ends: " << PQgetvalue(res, 0, 2) << "\n";
+    } else {
+        std::cerr << "Error fetching member data: " << PQerrorMessage(conn) << "\n";
+        PQclear(res);
+        return;
+    }
+    PQclear(res);
+
+    // Step 2: 연장 기간 입력
+    std::cout << "Enter the number of days to extend membership: ";
+    std::cin >> extensionDays;
+
+    // Step 3: Update Query
+    std::string extendQuery = "UPDATE Members SET end_date = end_date + INTERVAL '" +
+                              std::to_string(extensionDays) + " days' WHERE ID = " + std::to_string(memberID) + ";";
+
+    res = PQexec(conn, extendQuery.c_str());
+    if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+        std::cout << "Membership extended successfully.\n";
+    } else {
+        std::cerr << "Failed to extend membership: " << PQerrorMessage(conn) << "\n";
+    }
     PQclear(res);
 }
 
@@ -437,6 +541,35 @@ void performTrainerActions(PGconn *conn, int trainerID, const std::string &role)
     }
 }
 
+void performFDStaffActions(PGconn *conn, int fDStaffID, const std::string &role) {
+    int choice;
+    while (true) {
+        std::cout << "\n=== FDstaff Menu ===\n";
+        std::cout << "1. Transfer Membership\n";
+        std::cout << "2. Extend Membership\n";
+        std::cout << "3. View Salary\n";
+        std::cout << "4. Logout\n";
+        std::cout << "Enter your choice: ";
+        std::cin >> choice;
+
+        switch (choice) {
+            case 1:
+                transferMembership(conn);
+                break;
+            case 2:
+                extendMembership(conn);
+                break;
+            case 3:
+                viewSalary(conn, fDStaffID, role);
+                break;
+            case 4:
+                std::cout << "Logging out...\n";
+                return;
+            default:
+                std::cout << "Invalid choice. Please try again.\n";
+        }
+    }
+}
 int main() {
     PGconn* conn = connectDB();
     if (!conn) return 1;
@@ -454,7 +587,7 @@ int main() {
     if (login(conn, userID, role)) {
         if (role == "member") performMemberActions(conn, userID, role);
         else if (role == "trainer") performTrainerActions(conn, userID, role);
-        //else if (role == "fdstaff") performFDStaffActions(conn, userID);
+        else if (role == "fdstaff") performFDStaffActions(conn, userID, role);
         //else if (role == "admin") performAdminActions(conn);
         else std::cout << "Other roles are not yet implemented.\n";
     }
