@@ -217,8 +217,8 @@ void completeUsage(PGconn *conn, int userID, const std::string &role) {
 
     // Step 2: 로그 기록
     std::string logQuery =
-        "INSERT INTO WaitingLog (EID, uid, end_time) "
-        "VALUES (" + std::to_string(equipmentID) + ", " + std::to_string(userID) + ", NOW());";
+        "INSERT INTO WaitingLog (EID, uid, end_time, role) "
+        "VALUES (" + std::to_string(equipmentID) + ", " + std::to_string(userID) + ", NOW()" + ", '" + role + "');";
     PGresult *logRes = PQexec(conn, logQuery.c_str());
 
     if (PQresultStatus(logRes) != PGRES_COMMAND_OK) {
@@ -472,6 +472,194 @@ void extendMembership(PGconn *conn) {
     PQclear(res);
 }
 
+void salaryInquiry(PGconn *conn) {
+    int choice;
+
+    while (true) {
+        std::cout << "\n=== Sales Inquiry ===\n";
+        std::cout << "1. View Individual Staff Revenue and Salaries\n";
+        std::cout << "2. View Total Revenue\n";
+        std::cout << "3. Back to Admin Menu\n";
+        std::cout << "Enter your choice: ";
+        std::cin >> choice;
+
+        switch (choice) {
+            case 1: { // 각 직원의 수익 및 급여
+                std::string query = R"(
+                    SELECT role, SUM(income) AS total_income, SUM(salary) AS total_salary
+                    FROM (
+                        SELECT 'Trainer' AS role, PT_count * 50000 AS income, PT_count * salary AS salary FROM Trainers natural join Levels
+                        UNION ALL
+                        SELECT 'FD Staff' AS role, attend_days * 30000 AS income, attend_days * salary FROM FDStaffs natural join Levels
+                    ) AS Revenue
+                    GROUP BY role;
+                )";
+
+                PGresult *res = PQexec(conn, query.c_str());
+                if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+                    std::cout << "\nRole       | Total Income | Total Salary\n";
+                    for (int i = 0; i < PQntuples(res); ++i) {
+                        std::cout << PQgetvalue(res, i, 0) << " | " 
+                                  << PQgetvalue(res, i, 1) << " | "
+                                  << PQgetvalue(res, i, 2) << "\n";
+                    }
+                } else {
+                    std::cerr << "Failed to fetch revenue data.\n";
+                }
+                PQclear(res);
+                break;
+            }
+            case 2: { // 총 매출
+                std::string query = R"(
+                    SELECT SUM(income) - SUM(salary) AS net_revenue
+                    FROM (
+                        SELECT PT_count * 50000 AS income, PT_count * salary AS salary FROM Trainers natural join Levels
+                        UNION ALL
+                        SELECT attend_days * 30000 AS income, attend_days * salary AS salary FROM FDStaffs natural join Levels
+                    ) AS Revenue;
+                )";
+
+                PGresult *res = PQexec(conn, query.c_str());
+                if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+                    std::cout << "\nNet Revenue: " << PQgetvalue(res, 0, 0) << "\n";
+                } else {
+                    std::cerr << "Failed to fetch total revenue.\n";
+                }
+                PQclear(res);
+                break;
+            }
+            case 3:
+                return;
+            default:
+                std::cout << "Invalid choice. Please try again.\n";
+        }
+    }
+}
+
+void staffPromotion(PGconn *conn) {
+    int staffID;
+    std::string role, newLevel;
+    std::cout << "Enter the ID of the staff to promote: ";
+    std::cin >> staffID;
+    std::cout << "Enter the role of the staff (trainer/fdstaff): ";
+    std::cin >> role;
+
+    role = role == "trainer" ? "Trainers" : "FDStaffs";
+    
+    // 직원 조회
+    std::string query = "SELECT ID, name, level FROM " + role + " WHERE ID = " + std::to_string(staffID) + ";";
+    PGresult *res = PQexec(conn, query.c_str());
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK) {
+        std::cout << "\nStaff Information:\n";
+        std::cout << "ID: " << PQgetvalue(res, 0, 0)
+                  << ", Name: " << PQgetvalue(res, 0, 1)
+                  << ", Current Level: " << PQgetvalue(res, 0, 2) << "\n";
+        while (true) {
+            std::cout << "Enter new level for the staff(Junior/Intermediate/Senior/Expert/Master): ";
+            std::cin >> newLevel;
+            if (newLevel == "Junior" || newLevel == "Intermediate" || newLevel == "Senior" || newLevel == "Expert" || newLevel == "Master") {
+                break;
+            }
+            else std::cout << "Invalid level. Please try again.\n";
+        }
+
+        // 진급 업데이트
+        std::string updateQuery = "UPDATE " + role + " SET level = '" + newLevel + "' WHERE ID = " + std::to_string(staffID) + ";";
+        PGresult *updateRes = PQexec(conn, updateQuery.c_str());
+        if (PQresultStatus(updateRes) == PGRES_COMMAND_OK) {
+            std::cout << "Staff promoted successfully.\n";
+        } else {
+            std::cerr << "Failed to promote staff.\n";
+        }
+        PQclear(updateRes);
+    } else {
+        std::cerr << "Failed to fetch staff information.\n";
+    }
+    PQclear(res);
+}
+
+void equipmentUsage(PGconn *conn) {
+    int equipmentID;
+
+    // Step 1: 분석할 기구 ID 입력
+    std::cout << "Enter the ID of the equipment to analyze usage: ";
+    std::cin >> equipmentID;
+
+    // Step 2: 기구 사용도 분석 쿼리
+    std::string query = R"(
+        SELECT 
+            EID, 
+            COUNT(*) AS usage_count, 
+            SUM(CASE WHEN role = 'Member' THEN 1 ELSE 0 END) AS member_usage_count, 
+            SUM(CASE WHEN role = 'Trainer' THEN 1 ELSE 0 END) AS trainer_usage_count
+        FROM waitingLog
+        WHERE EID = )" + std::to_string(equipmentID) + R"( 
+        GROUP BY EID;
+    )";
+
+    PGresult *res = PQexec(conn, query.c_str());
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+        // Step 3: 결과 출력
+        std::cout << "\nEquipment Usage Information:\n";
+        std::cout << "Equipment ID: " << PQgetvalue(res, 0, 0) << "\n";
+        std::cout << "Total Usage Count: " << PQgetvalue(res, 0, 1) << "\n";
+        std::cout << "Member Usage Count: " << PQgetvalue(res, 0, 2) << "\n";
+        std::cout << "Trainer Usage Count: " << PQgetvalue(res, 0, 3) << "\n";
+    } else {
+        std::cerr << "No usage data found for the specified equipment.\n";
+    }
+
+    PQclear(res);
+
+    // Step 4: 추가 정렬 옵션
+    int sortChoice;
+    std::cout << "\nDo you want to sort equipment usage data?\n";
+    std::cout << "1. By Total Usage Count\n";
+    std::cout << "2. By Member Usage Count\n";
+    std::cout << "3. By Trainer Usage Count\n";
+    std::cout << "4. Exit\n";
+    std::cout << "Enter your choice: ";
+    std::cin >> sortChoice;
+
+    if (sortChoice >= 1 && sortChoice <= 3) {
+        std::string sortColumn;
+        switch (sortChoice) {
+            case 1: sortColumn = "usage_count"; break;
+            case 2: sortColumn = "member_usage_count"; break;
+            case 3: sortColumn = "trainer_usage_count"; break;
+        }
+
+        std::string sortQuery = R"(
+            SELECT 
+                EID, 
+                COUNT(*) AS usage_count, 
+                SUM(CASE WHEN role = 'Member' THEN 1 ELSE 0 END) AS member_usage_count, 
+                SUM(CASE WHEN role = 'Trainer' THEN 1 ELSE 0 END) AS trainer_usage_count
+            FROM waitingLog
+            GROUP BY EID
+            ORDER BY )" + sortColumn + R"( DESC;
+        )";
+
+        PGresult *sortRes = PQexec(conn, sortQuery.c_str());
+        if (PQresultStatus(sortRes) == PGRES_TUPLES_OK) {
+            std::cout << "\nSorted Equipment Usage Information:\n";
+            for (int i = 0; i < PQntuples(sortRes); ++i) {
+                std::cout << "Equipment ID: " << PQgetvalue(sortRes, i, 0)
+                          << ", Total Usage Count: " << PQgetvalue(sortRes, i, 1)
+                          << ", Member Usage Count: " << PQgetvalue(sortRes, i, 2)
+                          << ", Trainer Usage Count: " << PQgetvalue(sortRes, i, 3) << "\n";
+            }
+        } else {
+            std::cerr << "Failed to sort equipment usage data.\n";
+        }
+        PQclear(sortRes);
+    } else {
+        std::cout << "Exiting sort options.\n";
+    }
+}
+
 
 void performMemberActions(PGconn *conn, int memberID, const std::string &role) {
     int choice;
@@ -570,6 +758,37 @@ void performFDStaffActions(PGconn *conn, int fDStaffID, const std::string &role)
         }
     }
 }
+
+void performAdminActions(PGconn *conn) {
+    int choice;
+    while (true) {
+        std::cout << "\n=== Admin Menu ===\n";
+        std::cout << "1. Sales Inquiry\n";
+        std::cout << "2. Staff Promotion\n";
+        std::cout << "3. View Equipment Usage\n";
+        std::cout << "4. Logout\n";
+        std::cout << "Enter your choice: ";
+        std::cin >> choice;
+
+        switch (choice) {
+            case 1:
+                salaryInquiry(conn);
+                break;
+            case 2:
+                staffPromotion(conn);
+                break;
+            case 3:
+                equipmentUsage(conn);
+                break;
+            case 4:
+                std::cout << "Logging out...\n";
+                return;
+            default:
+                std::cout << "Invalid choice. Please try again.\n";
+        }
+    }
+}
+
 int main() {
     PGconn* conn = connectDB();
     if (!conn) return 1;
@@ -588,7 +807,7 @@ int main() {
         if (role == "member") performMemberActions(conn, userID, role);
         else if (role == "trainer") performTrainerActions(conn, userID, role);
         else if (role == "fdstaff") performFDStaffActions(conn, userID, role);
-        //else if (role == "admin") performAdminActions(conn);
+        else if (role == "admin") performAdminActions(conn);
         else std::cout << "Other roles are not yet implemented.\n";
     }
 
